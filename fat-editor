@@ -1,0 +1,229 @@
+#!/bin/sh
+
+INTERACTIVE=True
+if [ -e /boot/firmware/config.txt ] ; then
+  FIRMWARE=/firmware
+else
+  FIRMWARE=
+fi
+
+BOOT_PART="/boot${FIRMWARE}"
+ASK_TO_REBOOT=0
+
+calc_wt_size() {
+    WT_HEIGHT=18
+    WT_WIDTH=$(tput cols)
+    if [ -z "$WT_WIDTH" ] || [ "$WT_WIDTH" -lt 60 ]; then
+       WT_WIDTH=80
+    fi
+    if [ "$WT_WIDTH" -gt 178 ]; then
+        WT_WIDTH=120
+    fi
+    WT_MENU_HEIGHT=$((WT_HEIGHT - 7))
+}
+
+get_bootro_now() {
+  findmnt "$BOOT_PART" | grep -q " ro,"
+  echo $?
+}
+
+do_mount_rw() {
+    if [ $(get_bootro_now) -eq 0 ]; then
+        if ! mount -o remount,rw "$BOOT_PART" 2>/dev/null; then
+            echo "Failed to mount boot partition as read-write"
+            return 1
+        fi
+        # echo "Boot partition mounted as read-write"
+    else
+        echo "Boot partition already writable"
+    fi
+    return 0
+}
+
+do_mount_ro() {
+    if ! mount -o remount,ro "$BOOT_PART" 2>/dev/null; then
+        echo "Failed to remount boot partition as read-only"
+        return 1
+    fi
+    # echo "Boot partition remounted as read-only"
+    return 0
+}
+
+do_edit_config() {
+    if [ "$INTERACTIVE" = True ]; then
+        whiptail --yesno "Edit config.txt file?" 20 60 2
+        if [ $? -ne 0 ]; then
+            return 0
+        fi
+    fi
+
+    do_mount_rw || return 1
+    
+    if [ -f "$BOOT_PART/config.txt" ]; then
+        if [ "$INTERACTIVE" = True ]; then
+            nano "$BOOT_PART/config.txt"
+        else
+            echo "config.txt found at $BOOT_PART/config.txt"
+        fi
+    else
+        echo "config.txt not found"
+        return 1
+    fi
+    
+    do_mount_ro
+}
+
+do_edit_cmdline() {
+    if [ "$INTERACTIVE" = True ]; then
+        whiptail --yesno "Edit cmdline.txt file?" 20 60 2
+        if [ $? -ne 0 ]; then
+            return 0
+        fi
+    fi
+
+    do_mount_rw || return 1
+    
+    if [ -f "$BOOT_PART/cmdline.txt" ]; then
+        if [ "$INTERACTIVE" = True ]; then
+            nano "$BOOT_PART/cmdline.txt"
+        else
+            echo "cmdline.txt found at $BOOT_PART/cmdline.txt"
+        fi
+    else
+        echo "cmdline.txt not found"
+        return 1
+    fi
+    
+    do_mount_ro
+}
+
+do_custom_edit() {
+    if [ "$INTERACTIVE" = True ]; then
+        FILE=$(whiptail --inputbox "Enter filename to edit:" 20 60 3>&1 1>&2 2>&3)
+        if [ $? -ne 0 ] || [ -z "$FILE" ]; then
+            return 0
+        fi
+    else
+        FILE="$1"
+        if [ -z "$FILE" ]; then
+            echo "No filename provided"
+            return 1
+        fi
+    fi
+
+    do_mount_rw || return 1
+    
+    if [ -f "$BOOT_PART/$FILE" ]; then
+        nano "$BOOT_PART/$FILE"
+    else
+        echo "File $BOOT_PART/$FILE not found. Create it? (y/n)"
+        read -r CREATE
+        if [ "$CREATE" = "y" ] || [ "$CREATE" = "Y" ]; then
+            touch "$BOOT_PART/$FILE"
+            nano "$BOOT_PART/$FILE"
+        else
+            do_mount_ro
+            return 1
+        fi
+    fi
+    
+    do_mount_ro
+}
+
+do_custom_delete() {
+    if [ "$INTERACTIVE" = True ]; then
+        FILE=$(whiptail --inputbox "Enter filename to delete:" 20 60 3>&1 1>&2 2>&3)
+        if [ $? -ne 0 ] || [ -z "$FILE" ]; then
+            return 0
+        fi
+    else
+        FILE="$1"
+        if [ -z "$FILE" ]; then
+            echo "No filename provided"
+            return 1
+        fi
+    fi
+
+    do_mount_rw || return 1
+    
+    if [ -f "$BOOT_PART/$FILE" ]; then
+        if [ "$INTERACTIVE" = True ]; then
+            whiptail --yesno "Delete file $FILE?" 20 60 2
+            if [ $? -eq 0 ]; then
+                rm "$BOOT_PART/$FILE"
+                whiptail --msgbox "File $FILE deleted successfully" 20 60 2
+            fi
+        else
+            echo "Delete file $BOOT_PART/$FILE? (y/n)"
+            read -r DELETE
+            if [ "$DELETE" = "y" ] || [ "$DELETE" = "Y" ]; then
+                rm "$BOOT_PART/$FILE"
+                echo "File $FILE deleted successfully"
+            fi
+        fi
+    else
+        if [ "$INTERACTIVE" = True ]; then
+            whiptail --msgbox "File $FILE not found" 20 60 2
+        else
+            echo "File $BOOT_PART/$FILE not found"
+        fi
+    fi
+    
+    do_mount_ro
+}
+
+nonint() {
+  "$@"
+}
+
+# Command line options
+for i in $*
+do
+  case $i in
+  nonint)
+    INTERACTIVE=False
+    "$@"
+    exit $?
+    ;;
+  *)
+    if [ -n "$1" ] && [ "$1" != "nonint" ]; then
+      INTERACTIVE=False
+      do_custom_edit "$1"
+      exit 0
+    fi
+    ;;
+  esac
+done
+
+run(){
+    calc_wt_size
+    while true; do
+        FUN=$(whiptail --title "FAT Partition File Editor" --backtitle "Boot Partition: $BOOT_PART" --menu "File Operations" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button Finish --ok-button Select \
+            "1 Edit config.txt" "Edit Raspberry Pi config file" \
+            "2 Edit cmdline.txt" "Edit kernel command line" \
+            "3 Custom File" "Edit any file in boot partition" \
+            "4 Delete File" "Delete any file in boot partition" \
+            3>&1 1>&2 2>&3)
+        RET=$?
+        if [ $RET -eq 1 ]; then
+            exit 0
+        elif [ $RET -eq 0 ]; then
+            case "$FUN" in
+                1\ *) do_edit_config ;;
+                2\ *) do_edit_cmdline ;;
+                3\ *) do_custom_edit ;;
+                4\ *) do_custom_delete ;;
+                *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
+            esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+        else
+            exit 1
+        fi
+    done
+}
+
+if [ $(id -u) -ne 0 ]; then
+  printf "Script must be run as root. Try 'sudo fat-editor'\n"
+  exit 1
+fi
+
+run

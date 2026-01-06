@@ -14,3 +14,10 @@ drwxr-xr-x 3 root root  4096 Dec 17 03:12 overlay
 sudo find /mnt/data_partition -type f 2>/dev/null
 /mnt/data_partition/overlay/etc/systemd/system/systemd-remount-fs.service.d/overlayroot.conf
 
+sudo nano /etc/systemd/journald.conf
+
+SystemMaxUse=100M
+#SystemKeepFree=
+SystemMaxFileSize=1M
+SystemMaxFiles=100
+

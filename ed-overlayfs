@@ -124,6 +124,65 @@ do_bootrw(){
     fi
 }
 
+do_factory_reset() {
+    get_rw_dev
+    if [ $? -ne 0 ];then
+        echo "Not found the writable partition."
+        return 1
+    fi
+
+    if [ "$INTERACTIVE" = True ]; then
+        whiptail --yesno "This will disable OverlayFS and reset the third partition to factory settings. Continue?" 20 60 2
+        if [ $? -ne 0 ]; then
+            return 0
+        fi
+    fi
+
+    if [ $(get_bootro_now) -eq 0 ] ; then
+        if ! mount -o remount,rw /boot${FIRMWARE} 2>/dev/null ; then
+            echo "Unable to mount boot partition as writable"
+            return 1
+        fi
+    fi
+
+    sed -i $CMDLINE -e "s/\(^\| \)overlayroot=[^ ]*\( \|$\)/ /g; s/  \+/ /g; s/^ //; s/ $//"
+    sed -i $CMDLINE -e "s|^|overlayroot=disabled |"
+    
+    if ! mount -o remount,ro /boot${FIRMWARE} 2>/dev/null ; then
+        echo "Unable to remount boot partition as read-only"
+    fi
+
+    TEMP_MOUNT=$(mktemp -d)
+    if ! mount "$RW_PART" "$TEMP_MOUNT" 2>/dev/null; then
+        echo "Failed to mount data partition"
+        rmdir "$TEMP_MOUNT" 2>/dev/null
+        return 1
+    fi
+
+    # Remove everything except lost+found and overlay
+    find "$TEMP_MOUNT" -mindepth 1 -maxdepth 1 ! -name "lost+found" ! -name "overlay" -exec rm -rf {} + 2>/dev/null
+    
+    rm -rf "$TEMP_MOUNT"/overlay/* 2>/dev/null
+    mkdir -p "$TEMP_MOUNT"/overlay/etc/systemd/system/systemd-remount-fs.service.d
+    
+    cat > "$TEMP_MOUNT"/overlay/etc/systemd/system/systemd-remount-fs.service.d/overlayroot.conf << 'EOF'
+[Unit]
+ConditionKernelCommandLine=!overlayroot=disabled
+EOF
+    
+    if ! umount "$TEMP_MOUNT" 2>/dev/null; then
+        echo "Failed to unmount data partition"
+        return 1
+    fi
+    rmdir "$TEMP_MOUNT" 2>/dev/null
+    
+    ASK_TO_REBOOT=1
+    
+    if [ "$INTERACTIVE" = True ]; then
+        whiptail --msgbox "Factory reset completed. OverlayFS disabled and partition restored to initial state." 20 60 2
+    fi
+}
+
 do_expand_rootfs() {
     get_rw_dev
     if [ $? -ne 0 ];then
@@ -212,6 +271,10 @@ do
     printf "Please reboot\n"
     exit 0
     ;;
+  --factory-reset)
+    do_factory_reset
+    exit 0
+    ;;
   nonint)
     INTERACTIVE=False
     #echo "$@"
@@ -231,6 +294,7 @@ run(){
             "1 BOOT RW" "Temporarily remounting boot partition as read-write..." \
             "2 OVERLAYFS" "Configure OverlayFS" \
             "3 Expand Filesystem" "Ensures that all of the SD card is available" \
+            "4 Factory Reset" "Reset third partition to factory settings" \
             3>&1 1>&2 2>&3)
         RET=$?
         if [ $RET -eq 1 ]; then
@@ -240,6 +304,7 @@ run(){
                 1\ *) do_bootrw ;;
                 2\ *) do_overlayfs ;;
                 3\ *) do_expand_rootfs ;;
+                4\ *) do_factory_reset ;;
                 *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
             esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
         else
